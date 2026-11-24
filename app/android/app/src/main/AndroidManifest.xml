@@ -64,6 +64,13 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/update_file_paths"/>
         </provider>
+        <!-- resizeableActivity 显式 true（window-metrics-heal-1）：小米官方
+             分屏适配说明（dev.mi.com pId=1592）——未声明时系统按 targetSdk +
+             screenOrientation 综合判定可否多窗口；本 activity 锁 portrait，
+             HyperOS 又屏蔽了 Android 16 大屏强制忽略方向锁（pId=2035），
+             落入"固定方向不 resize、只裁剪 surface"兼容分支=小窗整屏空白
+             （2026-11-24 小米 17 真机取证）。显式声明移除综合判定分支；
+             多窗口内的方向交还系统由 Dart 方向闸负责（orientation-unlock-1）。 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -73,6 +80,7 @@
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
             android:screenOrientation="portrait"
+            android:resizeableActivity="true"
             android:windowSoftInputMode="adjustResize">
             <!-- Specifies an Android theme to apply to this Activity as soon as
                  the Android process has started. This theme is visible to the user

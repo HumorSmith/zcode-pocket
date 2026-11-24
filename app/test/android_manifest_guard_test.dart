@@ -44,6 +44,20 @@ void main() {
     );
   });
 
+  test('MainActivity 必须显式 resizeableActivity="true"（window-metrics-heal-1）', () {
+    final manifest = File('android/app/src/main/AndroidManifest.xml')
+        .readAsStringSync();
+    final block = _nodeBlock(manifest, 'activity');
+    expect(block, isNotNull, reason: 'manifest 缺 <activity> 节点');
+    expect(
+      block!.contains('android:resizeableActivity="true"'),
+      isTrue,
+      reason: '未显式声明时小米按 targetSdk+screenOrientation 综合判定'
+          '（官方 pId=1592）；锁 portrait 会落入"不 resize 只裁剪 surface"'
+          '兼容分支=小窗整屏空白（小米 17/HyperOS 3 真机取证）',
+    );
+  });
+
   test('应用内更新安装链路三件套（in-app-update-1）', () {
     final manifest = File('android/app/src/main/AndroidManifest.xml')
         .readAsStringSync();

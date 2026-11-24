@@ -8,10 +8,13 @@ import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.Build
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import java.io.File
+import kotlin.math.abs
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -27,6 +30,14 @@ class MainActivity : FlutterActivity() {
         private const val RECREATE_WINDOW_MS = 10 * 60 * 1000L
         private const val RECREATE_MAX = 3
         private val recreateAt = mutableListOf<Long>()
+
+        // 窗口 metrics 自愈参数（window-metrics-heal-1，取证 2026-11-24
+        // 小米 17/HyperOS 3 真机）。
+        private const val HEAL_SAMPLE_DELAY_MS = 600L
+        private const val HEAL_RESAMPLE_DELAY_MS = 400L
+        private const val HEAL_PERIODIC_MS = 4000L
+        private const val HEAL_TOLERANCE_PX = 8
+        private const val HEAL_MAX_ATTEMPTS = 2
     }
 
     private var pairingUrl: String? = null
@@ -40,6 +51,149 @@ class MainActivity : FlutterActivity() {
     private var testChannel: MethodChannel? = null
     private var pdfBindGeneration: Long = 0L
 
+    // ---- 窗口 metrics 自愈（window-metrics-heal-1）----
+    // HyperOS 3 小窗进入动画的 resize 序列不保证最终一跳送达 app：真机
+    // 取证（2026-11-24 小米 17）小窗 frame 已是 1037×1952，ViewRootImpl
+    // 仍按全屏宽 1220 排版（WMS 侧 "Requested w=1220 h=1952"），Flutter
+    // 引擎 metrics 更旧（停在动画中间态 1220×2547）——内容按大窗排版被
+    // 裁出可视区，用户看到整屏空白。帧看门狗对该楔死结构性失明：引擎
+    // 帧一直正常产出（屏上非纯色、Dart/RPC 全程存活），它只检测"零帧"。
+    // 自愈双条件：A=decorView 实际尺寸与窗口真值 bounds 背离（真值=
+    // 回调 newConfig.windowConfiguration.bounds，官方 pId=1593 §11；
+    // 未收到回调时退回 currentWindowMetrics）；B=多窗且无回调真值时
+    // View 树仍等于最大窗口尺寸（HyperOS 小窗只裁剪 task surface、
+    // 客户端 relayout 最终一跳丢失，View 树与 currentWindowMetrics
+    // 一起停在全屏——A 两侧同旧失明，B 兜住）。延迟复核仍命中（躲开
+    // 小窗进入动画的中间态，pId=2043 官方 post 延迟缓解）时，
+    // updateViewLayout 强制向 WMS 重发 relayout 请求——WMS
+    // 回以当前 frame，ViewRootImpl 重测量→View 尺寸变化→Flutter 收到新
+    // metrics→整树重排。温和手段不动表面、不重建 Activity；同一次布局
+    // 事件限 2 次（letterbox 等合法背离不会收敛，避免无限空转），视图
+    // 尺寸真的变了才重新武装。
+    private val healHandler = Handler(Looper.getMainLooper())
+    // 官方尺寸真值（小米 pId=1593 §11）：Configuration 一律用回调入参
+    // newConfig，不用 getResources()/currentWindowMetrics——后者可能尚未
+    // 被系统更新（本案例客户端两侧一起停在全屏旧值）。
+    private var healConfigBounds: android.graphics.Rect? = null
+    private var healSampleQueued = false
+    private var healMismatchSeen = false
+    private var healAttempts = 0
+    private var healExhaustedLogged = false
+    private var healLastViewW = -1
+    private var healLastViewH = -1
+    private var healPeriodicRunning = false
+
+    private val healSampleRunnable: Runnable = Runnable { sampleWindowMetrics() }
+    private val healPeriodicRunnable: Runnable = Runnable {
+        sampleWindowMetrics()
+        if (healPeriodicRunning) {
+            healHandler.postDelayed(healPeriodicRunnable, HEAL_PERIODIC_MS)
+        }
+    }
+
+    private fun scheduleHealSample(delayMs: Long) {
+        healSampleQueued = true
+        healHandler.removeCallbacks(healSampleRunnable)
+        healHandler.postDelayed(healSampleRunnable, delayMs)
+    }
+
+    private fun sampleWindowMetrics() {
+        healSampleQueued = false
+        // currentWindowMetrics 是 API 30+；minSdk 24 老设备无小窗语义，
+        // 直接不启用。
+        if (Build.VERSION.SDK_INT < 30) return
+        val decor = window.decorView
+        val dw = decor.width
+        val dh = decor.height
+        if (dw <= 0 || dh <= 0) return
+        // IME 打开时跳过（老 API + 非 edge-to-edge 组合下 adjustResize
+        // 会合法缩窗，decorView≠bounds 是正常态，不能当背离修）。
+        val insets = decor.rootWindowInsets
+        if (insets.isVisible(android.view.WindowInsets.Type.ime())) return
+        // 尺寸真值：多窗口优先用回调 newConfig 带来的 bounds（官方
+        // pId=1593 §11）；尚未收到回调时退回 currentWindowMetrics。
+        val bounds = if (isInMultiWindowMode) {
+            healConfigBounds ?: windowManager.currentWindowMetrics.bounds
+        } else {
+            windowManager.currentWindowMetrics.bounds
+        }
+        // 条件 A：View 尺寸与真值 bounds 背离。
+        val diverged = abs(dw - bounds.width()) > HEAL_TOLERANCE_PX ||
+            abs(dh - bounds.height()) > HEAL_TOLERANCE_PX
+        // 条件 B（兜底，仅多窗口且尚未收到任何 config 回调时）：HyperOS
+        // 小窗只移动/裁剪 task surface、客户端 relayout 最终一跳丢失——
+        // View 树与 currentWindowMetrics 一起停在全屏（两侧同旧，A 失明）。
+        // 多窗模式下 View 树仍等于最大窗口尺寸=陈旧全屏树，必错。
+        val max = windowManager.maximumWindowMetrics.bounds
+        val staleFullscreen = isInMultiWindowMode && healConfigBounds == null &&
+            abs(dw - max.width()) <= HEAL_TOLERANCE_PX &&
+            abs(dh - max.height()) <= HEAL_TOLERANCE_PX
+        if (isInMultiWindowMode) {
+            Log.i(
+                "window",
+                "metrics sample: multi=true view=${dw}x${dh} " +
+                    "truth=${bounds.width()}x${bounds.height()} " +
+                    "configBounds=${healConfigBounds != null} " +
+                    "diverged=$diverged staleFullscreen=$staleFullscreen",
+            )
+        }
+        val mismatch = diverged || staleFullscreen
+        if (!mismatch) {
+            healMismatchSeen = false
+            healAttempts = 0
+            healExhaustedLogged = false
+            return
+        }
+        if (!healMismatchSeen) {
+            // 首次背离：延迟复核，躲动画/拖拽中间态（双采样确认）。
+            healMismatchSeen = true
+            scheduleHealSample(HEAL_RESAMPLE_DELAY_MS)
+            return
+        }
+        healMismatchSeen = false
+        if (healAttempts >= HEAL_MAX_ATTEMPTS) {
+            // 不收敛视为合法背离（letterbox/厂商适配），等视图尺寸真变
+            // 再重新武装；只留一行日志防刷屏。
+            if (!healExhaustedLogged) {
+                healExhaustedLogged = true
+                Log.w(
+                    "window",
+                    "metrics heal exhausted: view=${dw}x${dh} " +
+                        "bounds=${bounds.width()}x${bounds.height()} " +
+                        "(legit divergence? waiting for size change)",
+                )
+            }
+            return
+        }
+        healAttempts++
+        Log.w(
+            "window",
+            "window metrics stale: view=${dw}x${dh} " +
+                "bounds=${bounds.width()}x${bounds.height()} — " +
+                "updateViewLayout (attempt $healAttempts)",
+        )
+        try {
+            windowManager.updateViewLayout(decor, window.attributes)
+        } catch (e: Exception) {
+            Log.w("window", "updateViewLayout failed: ${e.message}")
+        }
+    }
+
+    private fun installWindowMetricsHeal() {
+        window.decorView.viewTreeObserver.addOnGlobalLayoutListener {
+            val decor = window.decorView
+            // 视图尺寸真变了→重新武装自愈尝试并重新采样；尺寸未变的
+            // 布局遍历不重复排队（事件驱动，静止零开销）。
+            if (decor.width != healLastViewW || decor.height != healLastViewH) {
+                healLastViewW = decor.width
+                healLastViewH = decor.height
+                healAttempts = 0
+                healExhaustedLogged = false
+                scheduleHealSample(HEAL_SAMPLE_DELAY_MS)
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
         // 链接器顺序加固（模拟器实证）：进程最早期先占位加载 libdartjni，
@@ -49,6 +203,77 @@ class MainActivity : FlutterActivity() {
         } catch (e: Throwable) {
             Log.w("voice", "dartjni preload skip: ${e.message}")
         }
+        installWindowMetricsHeal()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            // 获焦兜底：小窗最终落定可能不产生视图尺寸变化的布局事件，
+            // 获焦时主动采样一次。
+            scheduleHealSample(HEAL_SAMPLE_DELAY_MS)
+        } else if (healSampleQueued) {
+            healHandler.removeCallbacks(healSampleRunnable)
+            healSampleQueued = false
+            healMismatchSeen = false
+        }
+    }
+
+    override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean) {
+        super.onMultiWindowModeChanged(isInMultiWindowMode)
+        // 进/出小窗（分屏）的模式跳变是最直接的触发点——此刻 resize
+        // 最终一跳可能尚未送达/已丢失，延迟采样复核。
+        scheduleHealSample(HEAL_SAMPLE_DELAY_MS)
+    }
+
+    override fun onMultiWindowModeChanged(
+        isInMultiWindowMode: Boolean,
+        newConfig: android.content.res.Configuration,
+    ) {
+        // API 26+ 带 Configuration 的重载：记录官方尺寸真值后走单参
+        // 路径采样（super 默认实现即转发单参）。
+        healConfigBounds = configBoundsPx(newConfig)
+        super.onMultiWindowModeChanged(isInMultiWindowMode, newConfig)
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // 官方（pId=1593 §3/4/11）：小窗尺寸经 onConfigurationChanged 的
+        // newConfig 下发；记录 bounds 作自愈真值。pId=2043 官方缓解：
+        // rootView 尺寸不准时 post 延迟再响应——此处延迟采样即该手段。
+        healConfigBounds = configBoundsPx(newConfig)
+        scheduleHealSample(HEAL_SAMPLE_DELAY_MS)
+    }
+
+    /// 回调 newConfig 的窗口尺寸（px）。getWindowConfiguration()/
+    /// windowConfiguration 是系统 API（public stub 无此成员，javap
+    /// 实证；官方文档亦以 toString 解析/sw 取值）——改用公开字段
+    /// screenWidthDp/screenHeightDp × density（官方 pId=1593「mBounds
+    /// 以及 sw」的 sw 路径），多窗口下即窗口宽高而非屏幕宽高。
+    private fun configBoundsPx(c: android.content.res.Configuration): android.graphics.Rect? {
+        if (c.densityDpi <= 0 || c.screenWidthDp <= 0 || c.screenHeightDp <= 0) return null
+        val scale = c.densityDpi / 160f
+        return android.graphics.Rect(
+            0, 0,
+            Math.round(c.screenWidthDp * scale),
+            Math.round(c.screenHeightDp * scale),
+        )
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 周期兜底挂 Activity 生命周期而非窗口焦点：小窗楔死期间焦点
+        // 可能不跳变（取证 mCurrentFocus 始终在本 app），焦点驱动会漏。
+        if (!healPeriodicRunning) {
+            healPeriodicRunning = true
+            healHandler.postDelayed(healPeriodicRunnable, HEAL_PERIODIC_MS)
+        }
+    }
+
+    override fun onPause() {
+        healPeriodicRunning = false
+        healHandler.removeCallbacks(healPeriodicRunnable)
+        super.onPause()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -115,6 +340,8 @@ class MainActivity : FlutterActivity() {
         // （进程因 FGS 常驻时静态单例的泄漏面）。
         AppLockPlugin.release()
         PdfRendererPlugin.closeForGeneration(pdfBindGeneration)
+        healPeriodicRunning = false
+        healHandler.removeCallbacksAndMessages(null)
         super.onDestroy()
     }
 
@@ -137,6 +364,9 @@ class MainActivity : FlutterActivity() {
         )
         window.decorView.setOnApplyWindowInsetsListener { _, insets ->
             notifyChannel.invokeMethod("systemInsetChanged", bottomSystemInsetDp(insets))
+            // 小窗顶栏高度直推（window-metrics-heal-1）：Dart 根 builder
+            // 钳制异常 top padding 时的目标值（flutter/flutter#161086）。
+            notifyChannel.invokeMethod("captionInsetChanged", topCaptionDp(insets))
             insets
         }
         // 系统语音识别通道（2026-10-28 语音泛用批）：标准 SpeechRecognizer
@@ -445,6 +675,10 @@ class MainActivity : FlutterActivity() {
                     // 丢失（候选 06 真机实证：钮位✓遮挡仍在=恒 0）。
                     "currentSystemInset" ->
                         result.success(bottomSystemInsetDp(window.decorView.rootWindowInsets))
+                    // 小窗顶栏高度首推丢失兜底（window-metrics-heal-1，
+                    // 与 currentSystemInset 同款 r5 理由）。
+                    "currentCaptionInset" ->
+                        result.success(topCaptionDp(window.decorView.rootWindowInsets))
                     // 厂商原始串回传（notify-guide-oem-1）：Dart 侧规范化
                     // 出档位并切换引导文案（oem_vendor.dart）——原生只透传，
                     // 保持两端唯一真值在 Dart（可测）。
@@ -573,6 +807,18 @@ class MainActivity : FlutterActivity() {
         val nb = insets.getInsets(android.view.WindowInsets.Type.navigationBars())
         val cut = insets.getInsets(android.view.WindowInsets.Type.displayCutout())
         return maxOf(sb.bottom, nb.bottom, cut.bottom) / resources.displayMetrics.density
+    }
+
+    /// 小窗顶栏（captionBar TOP source）高度（逻辑 dp）——
+    /// window-metrics-heal-1：HyperOS 小窗另有 BOTTOM_CAPTION 拖拽把手
+    /// source，引擎 growViewportMetricsToCaptionBar 取 max(rect.bottom)
+    /// 误把把手底边当 top padding（flutter/flutter#161086）；Dart 根
+    /// builder 钳制异常 padding 时用本值作目标，避免内容被标题栏遮。
+    /// captionBar() 类型自 API 30；更低版本无小窗语义返回 0。
+    private fun topCaptionDp(insets: android.view.WindowInsets?): Float {
+        if (insets == null || Build.VERSION.SDK_INT < 30) return 0f
+        return insets.getInsets(android.view.WindowInsets.Type.captionBar()).top /
+            resources.displayMetrics.density
     }
 
     /// 本厂商「启动管理/自启动」页组件候选（三层兜底第 1 层；notify-guide-oem-1

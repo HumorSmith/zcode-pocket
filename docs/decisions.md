@@ -322,3 +322,35 @@ fallback on system error 5/-1.
 button only changes icon/color while active); slide-cancel and toggle mode add
 gesture surface to regression-test; the preview-edit step is gone (users edit
 in the composer instead).
+
+## 27. Small-window blanks are fixed at the source, not by the frame watchdog
+
+**Problem**: on Xiaomi 17 / HyperOS 3 the system small window (freeform) showed
+a blank app. Forensics (2026-11-24) found two stacked causes. (1) With portrait
+locked and no explicit `resizeableActivity`, HyperOS — which disables Android
+16's forced resizability (official doc pId=2035) — takes the fixed-orientation
+compat branch (pId=1592): the client never receives the small-window size, the
+task surface is merely moved/cropped, so the visible crop is the empty chat
+area of the full-screen layout. (2) Once the size does arrive, the Flutter
+engine's `growViewportMetricsToCaptionBar` takes `max(rect.bottom)` over all
+captionBar bounding rects; HyperOS adds a BOTTOM_CAPTION resize-handle source
+whose bottom edge ≈ window height, so top padding ≈ window height pushes the
+whole body out of view (only the padding-independent Scaffold FAB remains) —
+flutter/flutter#161086, engine still unfixed. The frame watchdog is structurally
+blind to both: frames and Dart keep flowing, the layout *inputs* are wrong.
+**Decision**: fix each layer at its source. Declare `resizeableActivity="true"`
+explicitly (manifest guard test keeps it; multi-window orientation is already
+handed back to the system by the Dart orientation gate). Clamp abnormal top
+padding (> half the window height — a status bar can never be that tall) in the
+root builder to the real caption-bar height pushed natively over the existing
+inset bridge (`systemCaptionTopDp`), the app-layer workaround verified in
+#161086. Keep a native window-metrics self-heal as backstop for lost resize
+hops: truth = callback `newConfig` bounds (official pId=1593 §11 — never the
+possibly-stale resources/client metrics), post-delayed double sample (pId=2043
+official mitigation), then `updateViewLayout` to force a relayout; attempt cap
+per layout event so legit divergence (letterbox) cannot spin.
+**Cost**: the padding clamp is a workaround until the engine fixes #161086;
+the self-heal adds a low-frequency sampler while resumed; MIUI's small-window
+task bounds stay full-width and clipped at the screen edge (ROM behavior, not
+ours to change); on-device acceptance of the clamp layer is pending at merge
+time and tracked in the PR.
