@@ -9,7 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:zcode_pocket/state/app_state.dart';
 import 'package:zcode_pocket/state/app_state_scope.dart';
 import 'package:zcode_pocket/ui/conversation_page.dart';
-import 'package:zcode_pocket/ui/voice_input_sheet.dart'
+import 'package:zcode_pocket/state/voice_availability.dart'
     show debugVoiceRecognitionAvailable;
 
 /// 内存桩（PlatformFile 层）：相册选择后的形态——真 IO 桩在 testWidgets

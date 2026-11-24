@@ -49,6 +49,11 @@ class UiPrefs extends ChangeNotifier {
   static const _keyVoiceRefine = 'ui.voiceRefine';
   static const _keyVoiceApiProvider = 'ui.voiceApiProvider';
 
+  /// DeepSeek ASR 转写 key（可选，独立于整理单键）：系统服务缺席时
+  /// 云转写通道用；留空且整理提供商为 DeepSeek 时复用整理 key
+  /// （解析规则见 deepseekAsrKey）。
+  static const _keyVoiceAsrApiKey = 'ui.voiceAsrApiKey';
+
   /// 深色模式批 2（ 拍板③）：主题档位 system|light|dark，
   /// 默认跟随系统；设置页三档开关为唯一出口，重启保持、切换即时生效。
   static const _keyThemeMode = 'ui.themeMode';
@@ -153,6 +158,7 @@ class UiPrefs extends ChangeNotifier {
   bool _voiceRefineEnabled = true;
   String? _voiceApiKey;
   String _voiceApiProvider = 'zhipu';
+  String? _voiceAsrApiKey;
 
   /// 提问自动采纳（默认开，官方同款）。
   bool _askAutoResolutionEnabled = true;
@@ -183,6 +189,19 @@ class UiPrefs extends ChangeNotifier {
   bool get voiceRefineEnabled => _voiceRefineEnabled;
   String? get voiceApiKey => _voiceApiKey;
   String get voiceApiProvider => _voiceApiProvider;
+  String? get voiceAsrApiKey => _voiceAsrApiKey;
+
+  /// 云转写 key 解析：专用字段优先；留空且整理提供商为 DeepSeek 时
+  /// 复用整理 key（同账号 key 体系）；否则 null（云通道不可用）。
+  String? get deepseekAsrKey {
+    final dedicated = (_voiceAsrApiKey ?? '').trim();
+    if (dedicated.isNotEmpty) return dedicated;
+    if (_voiceApiProvider == 'deepseek') {
+      final refine = (_voiceApiKey ?? '').trim();
+      if (refine.isNotEmpty) return refine;
+    }
+    return null;
+  }
 
   /// 本安装设备标识（marketing-claim-1）：首次读取时生成 UUID 并落盘，
   /// 之后恒返回同值；Future 记忆化+失败态会话内稳定值
@@ -282,6 +301,8 @@ class UiPrefs extends ChangeNotifier {
         _storage.read(key: _keyAppLockPinMaterial), // 28
         _storage.read(key: _keyTaskHeadsUp), // 29
         _storage.read(key: _keyQrPreviewMode), // 30
+        // 追加键必须排末尾（reads 按位置索引，插中间错位读）。
+        _storage.read(key: _keyVoiceAsrApiKey), // 31
       ];
       final reads = await Future.wait(
         readFutures.map(
@@ -365,6 +386,7 @@ class UiPrefs extends ChangeNotifier {
       _updateLastCheckAt = int.tryParse(reads[27] ?? '') ?? 0;
       _taskHeadsUp = reads[29] == 'true';
       _qrPreviewMode = normalizeQrPreviewMode(reads[30]);
+      _voiceAsrApiKey = reads[31];
       try {
         final qr = reads[14];
         if (qr != null && qr.isNotEmpty) {
@@ -706,6 +728,14 @@ class UiPrefs extends ChangeNotifier {
     _voiceApiProvider = id;
     notifyListeners();
     await _persist(_keyVoiceApiProvider, id);
+  }
+
+  /// DeepSeek ASR 转写 key（可选；空=清除，回落整理 key 复用规则）。
+  Future<void> setVoiceAsrApiKey(String? value) async {
+    final v = (value ?? '').trim();
+    _voiceAsrApiKey = v.isEmpty ? null : v;
+    notifyListeners();
+    await _persist(_keyVoiceAsrApiKey, v.isEmpty ? null : v);
   }
 
   Future<void> setLastModel(String providerId, String modelId) async {

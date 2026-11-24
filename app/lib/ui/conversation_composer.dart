@@ -134,9 +134,21 @@ class InputBar extends StatelessWidget {
   /// 待发送附件 chips 行（阶段 3 第三段；空附件传 null 不占位）。
   final Widget? attachmentsBar;
 
-  /// 语音输入入口（null=不可用）：发送键**长按**触发（2026-10-22 用户
-  /// 拍板：语音键收起腾位给状态点——独立语音键退役）。
+  /// 语音入口（2026-11-24 按住说话批，决策 26；同日用户拍板：**只保留
+  /// 长按**，点按不启动会话）。voiceAvailable=入口可用（空草稿显示麦克风
+  /// 作长按提示）；按住=push-to-talk（按住录音/松开收尾/上滑取消），由
+  /// onVoiceHold* 三回调驱动。onVoice 仅为 InputBar 级测试缝的点按回调，
+  /// 页面不传（点按无操作）。
+  final bool voiceAvailable;
   final VoidCallback? onVoice;
+  final VoidCallback? onVoiceHoldStart;
+  final void Function(double dy)? onVoiceHoldMove;
+  final VoidCallback? onVoiceHoldEnd;
+
+  /// 语音会话活跃：发送键转录音态（仅图标/颜色变化，不换子树类型——
+  /// 保住按住手势的 widget identity）。cancelArmed=上滑取消待松开。
+  final bool voiceActive;
+  final bool voiceCancelArmed;
 
   /// 连接状态点（输入栏常亮；V2 曾收进「+」面板导致常亮信号丢失，
   /// 2026-10-22 用户发现后拍板回输入栏原位——点按=用量详情卡开关）。
@@ -162,7 +174,13 @@ class InputBar extends StatelessWidget {
     this.onSelectionTap,
     this.onAdd,
     this.attachmentsBar,
+    this.voiceAvailable = false,
     this.onVoice,
+    this.onVoiceHoldStart,
+    this.onVoiceHoldMove,
+    this.onVoiceHoldEnd,
+    this.voiceActive = false,
+    this.voiceCancelArmed = false,
     this.statusColor,
     this.statusProgress,
     this.onStatusTap,
@@ -405,30 +423,40 @@ class InputBar extends StatelessWidget {
                                     height: 36,
                                     // V3 动效包#3：按下 0.92 缩放回弹。
                                     child: PressScale(
-                                      // 2026-10-22 用户拍板：长按发送键=
-                                      // 语音输入（语音键退役腾位状态点）。
-                                      // 长按不与点按冲突（无 onTap 竞技），
-                                      // 触觉反馈提示已触发。
+                                      // 2026-11-24 按住说话批：长按改
+                                      // hold 三态（start/move/end）——
+                                      // 按住录音、松开收尾、上滑取消；
+                                      // 点按麦克风=开关式会话（onVoice）。
                                       child: GestureDetector(
                                         //（语音直发静默丢弃）：发送在途
-                                        //（_sending=RPC/附件上传/held 等待
-                                        // 可达分钟级）时长按拉起语音面板，
-                                        // 听写后 onSend 撞 _sendText 的
-                                        // _sending 早退=文本无痕丢失（不入
-                                        // 草稿/队列/暂存）。长按与点按同闸
-                                        //（对齐下方 onPressed 的麦克风门）。
-                                        onLongPress:
-                                            (onVoice == null || sending)
-                                            ? null
-                                            : () {
-                                                HapticFeedback.mediumImpact();
-                                                onVoice!();
-                                              },
+                                        // 时 hold 与点按同闸（对齐下方
+                                        // onPressed 的麦克风门）。
+                                        onLongPressStart:
+                                            (onVoiceHoldStart == null ||
+                                                    sending)
+                                                ? null
+                                                : (_) {
+                                                    HapticFeedback
+                                                        .mediumImpact();
+                                                    onVoiceHoldStart!();
+                                                  },
+                                        onLongPressMoveUpdate:
+                                            onVoiceHoldMove == null
+                                                ? null
+                                                : (d) => onVoiceHoldMove!(
+                                                      d.localOffsetFromOrigin
+                                                          .dy,
+                                                    ),
+                                        onLongPressEnd:
+                                            onVoiceHoldEnd == null
+                                                ? null
+                                                : (_) => onVoiceHoldEnd!(),
                                         child: IconButton.filled(
                                           key: const ValueKey('send-button'),
                                           style: IconButton.styleFrom(
-                                            backgroundColor:
-                                                context.colors.brand,
+                                            backgroundColor: voiceActive
+                                                ? context.colors.destructive
+                                                : context.colors.brand,
                                             foregroundColor:
                                                 context.colors.onBrand,
                                             shape: const CircleBorder(),
@@ -438,33 +466,30 @@ class InputBar extends StatelessWidget {
                                                 .colors
                                                 .foregroundSubtlest,
                                           ),
-                                          // 发送在途时禁用+转圈；验收回填
-                                          //（2026-10-22 可发现性）：空闲且无
-                                          // 草稿时图标换麦克风、点按直达语音
-                                          //（微信/Telegram 同款惯例；长按
-                                          // 语音不变）——「发送键能语音」
-                                          // 从此可见。history-first-1：
+                                          // 发送在途时禁用+转圈；空闲且无
+                                          // 草稿时图标换麦克风（长按提示）。
+                                          // 2026-11-24 用户拍板：只保留长按，
+                                          // 点按不启动会话——页面仅传
+                                          // voiceAvailable（点按无操作），
+                                          // onVoice 点按回调仅供 InputBar 级
+                                          // 测试缝。history-first-1：
                                           // runtimeBlocked 有草稿=禁用；空
-                                          // 草稿麦克风点按不受限（语音面板
-                                          // 可开，发送由 _sendText 门控+回填
-                                          // 兜底——对抗审查修复 U3）。
+                                          // 草稿麦克风长按不受限（发送由
+                                          // _sendText 门控+回填兜底 U3）。
                                           onPressed:
                                               (sending ||
                                                   runtimeBlocked ||
                                                   controller.text
                                                       .trim()
                                                       .isEmpty)
-                                              ? ((onVoice != null &&
-                                                        !sending &&
-                                                        controller.text
-                                                            .trim()
-                                                            .isEmpty)
-                                                    ? onVoice
+                                              ? (((onVoice != null ||
+                                                        voiceAvailable) &&
+                                                    !sending &&
+                                                    controller.text
+                                                        .trim()
+                                                        .isEmpty)
+                                                    ? (onVoice ?? () {})
                                                     : null)
-                                              // 优化批 #1：发送键触觉反馈
-                                              // （点按即轻震，确认已触发）。
-                                              // 验收#13（M）：light
-                                              // 档真机几乎无感——升 medium。
                                               : () {
                                                   HapticFeedback.mediumImpact();
                                                   onSend();
@@ -478,10 +503,18 @@ class InputBar extends StatelessWidget {
                                                         strokeWidth: 2,
                                                       ),
                                                 )
-                                              : (controller.text
+                                              : voiceActive
+                                                  ? Icon(
+                                                      voiceCancelArmed
+                                                          ? Icons.close
+                                                          : Icons.mic_rounded,
+                                                      size: 21,
+                                                    )
+                                                  : (controller.text
                                                         .trim()
                                                         .isEmpty &&
-                                                    onVoice != null)
+                                                    (onVoice != null ||
+                                                        voiceAvailable))
                                               ? const Icon(
                                                   Icons.mic_rounded,
                                                   size: 21,

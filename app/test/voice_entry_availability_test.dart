@@ -11,7 +11,7 @@ import 'package:zcode_pocket/state/app_state.dart';
 import 'package:zcode_pocket/state/app_state_scope.dart';
 import 'package:zcode_pocket/ui/conversation_composer.dart';
 import 'package:zcode_pocket/ui/conversation_page.dart';
-import 'package:zcode_pocket/ui/voice_input_sheet.dart'
+import 'package:zcode_pocket/state/voice_availability.dart'
     show debugVoiceRecognitionAvailable;
 
 Future<void> _openAddSheet(WidgetTester tester) async {
@@ -68,7 +68,7 @@ void main() {
   // 在途（_sending=RPC/附件上传等待/held 弹窗，可达分钟级）时长按发送
   // 键曾不受门控——听写后 onSend 撞 _sendText 的 _sending 早退=口述
   // 文本无痕丢失（不入草稿/队列/暂存，面板照常关闭）。长按与点按同闸。
-  testWidgets('sending 态长按发送键不拉起语音；空闲态长按照常（与点按同闸）', (tester) async {
+  testWidgets('sending 态按住发送键不拉起语音；空闲态按住所常（与点按同闸）', (tester) async {
     debugVoiceRecognitionAvailable = true;
     addTearDown(() => debugVoiceRecognitionAvailable = null);
     var voiceOpened = 0;
@@ -89,24 +89,32 @@ void main() {
             onSend: () {},
             onStop: () {},
             onVoice: () => voiceOpened++,
+            onVoiceHoldStart: () => voiceOpened++,
           ),
         ),
       ),
     );
 
-    // 发送在途：长按不得拉起（修复前 onLongPress 不看 sending）。
+    Future<void> hold() async {
+      final g = await tester.startGesture(
+        tester.getCenter(find.byKey(const ValueKey('send-button'))),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await g.up();
+      await tester.pump();
+    }
+
+    // 发送在途：按住不得拉起（hold 与点按同闸）。
     await tester.pumpWidget(host(true));
     await tester.pump();
-    await tester.longPress(find.byKey(const ValueKey('send-button')));
-    await tester.pump();
+    await hold();
     expect(voiceOpened, 0,
-        reason: 'sending 态长按拉起语音=听写后撞 _sending 早退静默丢弃');
+        reason: 'sending 态按住拉起语音=听写后撞 _sending 早退静默丢弃');
 
-    // 空闲态：长按照常拉起（门控不误伤正常路径）。
+    // 空闲态：按住所常拉起（门控不误伤正常路径）。
     await tester.pumpWidget(host(false));
     await tester.pump();
-    await tester.longPress(find.byKey(const ValueKey('send-button')));
-    await tester.pump();
-    expect(voiceOpened, 1, reason: '空闲态长按语音入口照常');
+    await hold();
+    expect(voiceOpened, 1, reason: '空闲态按住语音入口照常');
   });
 }

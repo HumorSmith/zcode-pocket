@@ -707,6 +707,45 @@ const _customEn = <String, String>{
   '正在整理成规范指令…': 'Turning speech into a clear instruction…',
   '（可编辑后发送）': '(Edit before sending)',
   '没听到内容，再试一次': 'Nothing heard. Try again',
+  // DeepSeek ASR 批处理转写通道（系统服务缺席时的云兜底）：录音/转写
+  // 相位文案 + 设置识别引擎节 + 错误人话。
+  '正在录音（说完点「停止并转写」）':
+      'Recording — tap "Stop & transcribe" when done',
+  '停止并转写': 'Stop & transcribe',
+  // 按住说话 inline 条带（2026-11-24 决策 26）。
+  '正在听你说，松开转写': 'Listening — release to transcribe',
+  '正在听你说（说完点「说完了」）': 'Listening (tap "Done" when finished)',
+  '松开转写 · 上滑取消': 'Release to transcribe · slide up to cancel',
+  '松开取消': 'Release to cancel',
+  '录音最长 2 分钟': 'Up to 2 minutes per recording',
+  '已按口语整理': 'Polished from speech',
+  '正在转写…': 'Transcribing…',
+  '（录音最长 2 分钟，停止后上传转写）':
+      '(Up to 2 minutes; uploaded for transcription after you stop)',
+  '当前设备无可用语音服务': 'No speech service available on this device',
+  '系统语音服务': 'System speech service',
+  '可用（优先，实时上屏）': 'Available (preferred, live captions)',
+  '不可用（本机无系统识别服务）':
+      'Unavailable (no system recognizer on this device)',
+  'DeepSeek 转写 API key（可选）': 'DeepSeek transcription API key (optional)',
+  'DeepSeek 转写 API key': 'DeepSeek transcription API key',
+  '未单独设置——复用整理 key': 'Not set separately — reuses the polishing key',
+  '未设置——系统服务不可用时语音入口隐藏':
+      'Not set — voice entry hidden when no system service',
+  '系统服务不可用时录音上传 DeepSeek 转写（录完再转写）；音频经你的 key 直连官方端点。':
+      'When no system service is available, recordings are uploaded to DeepSeek for transcription (record-then-transcribe); audio goes directly to the official endpoint with your key.',
+  'platform.deepseek.com 的 API key（与整理同账号）':
+      'API key from platform.deepseek.com (same account as polishing)',
+  'API key 无效或无权限，请在设置中检查':
+      'API key invalid or unauthorized. Check it in Settings',
+  '音频格式不受支持，请重试': 'Audio format not supported. Try again',
+  '上传超时，请重试或改用键盘输入':
+      'Upload timed out. Retry or use keyboard input',
+  '录音过长，请缩短后重试': 'Recording too long. Shorten it and retry',
+  '请求过频，请稍后重试': 'Too many requests. Try again later',
+  '服务繁忙，请稍后重试': 'Service busy. Try again later',
+  '转写超时，请重试或改用键盘输入':
+      'Transcription timed out. Retry or use keyboard input',
   '语音输入不可用': 'Voice input unavailable',
   '整理功能需在设置里选提供商并填对应 API key（没有则直接用原文）。': 'Choose a provider and enter its API key in Settings to enable cleanup (otherwise the original text is used).',
   '口语整理未生效，已用原文（检查 API key/网络）':

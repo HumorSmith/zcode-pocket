@@ -65,7 +65,7 @@ https://github.com/user-attachments/assets/4e81ba59-6d69-4316-a5fc-67955c261c47
 - Projects / branches: workspace project tree, branch picker for new chats
 - Input: persistent drafts (isolated per computer/account/workspace/
   conversation), offline send queue, attachments, screenshot annotation,
-  voice input (system recognizer)
+  voice input (system recognizer / DeepSeek cloud transcription)
 - Workflows: run catalog and artifact viewing (text/HTML preview)
 - Usage: subscription usage, heatmap (total / per-model), daily and
   per-model breakdowns and trends
@@ -232,11 +232,20 @@ excludes them.
 
 ### Voice input
 
-Speech recognition uses the standard system service (Android
-SpeechRecognizer) — no keys or extra setup required. Devices with a
-recognition service work out of the box; the entry hides itself when none is
-available. Optional transcript polishing supports Zhipu / DeepSeek / Kimi
-with your own API keys in settings.
+**Hold the mic to talk, release to transcribe** (slide up to cancel). The mic
+only responds to a long press — a tap does nothing; for a hands-free session
+use the add-panel "Voice input" entry (inline stop/cancel). The transcript
+lands in the composer for you to review and send manually — no modal sheet.
+Recognition
+prefers the standard system service (Android SpeechRecognizer) — no keys or
+extra setup, with live captions in the inline strip. On devices without a
+system recognition service (some China-market ROMs), entering a DeepSeek API
+key in settings enables cloud transcription (record-then-transcribe; audio
+goes directly to the official endpoint with your key). The entry hides itself
+only when neither is configured. Optional transcript polishing supports
+Zhipu / DeepSeek / Kimi with your own API keys in settings; when the polishing
+provider is DeepSeek, transcription reuses the same key (or set a dedicated
+one).
 
 ## Background & battery
 

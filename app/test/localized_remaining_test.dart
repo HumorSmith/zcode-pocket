@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/material.dart' hide Text;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcode_pocket/core/l10n.dart';
@@ -17,7 +19,11 @@ import 'package:zcode_pocket/ui/notify_guide_page.dart';
 import 'package:zcode_pocket/ui/profiles_sheet.dart';
 import 'package:zcode_pocket/ui/conversation_page.dart';
 import 'package:zcode_pocket/ui/subagent_list_sheet.dart';
-import 'package:zcode_pocket/ui/voice_input_sheet.dart';
+import 'package:zcode_pocket/ui/voice_dictation_strip.dart';
+import 'package:zcode_pocket/state/voice_dictation_controller.dart';
+import 'package:zcode_pocket/core/audio_capture.dart';
+import 'package:zcode_pocket/core/system_asr.dart';
+import 'package:flutter/services.dart';
 
 class _DiffApp extends AppState {
   @override
@@ -184,19 +190,49 @@ void main() {
     }
   });
 
-  testWidgets('英文·VoiceInputSheet 失败降级无未翻译项', (tester) async {
+  testWidgets('英文·语音 inline 条带 recording 无未翻译项', (tester) async {
     L10n.setTestLocale('en-US');
     L10n.collectMissing = true;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      const MethodChannel('flutter.baseflow.com/permissions/methods'),
+      (call) async {
+        if (call.method == 'requestPermissions' ||
+            call.method == 'checkPermissions') {
+          return {7: 1};
+        }
+        return null;
+      },
+    );
+    addTearDown(() => TestDefaultBinaryMessengerBinding
+        .instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('flutter.baseflow.com/permissions/methods'),
+          null,
+        ));
+    SystemAsr.debugSetAvailable(false);
+    addTearDown(SystemAsr.resetForTest);
+    debugVoiceRecorderOverride = () => _StripRecorder();
+    addTearDown(() => debugVoiceRecorderOverride = null);
+    VoiceDictationController.debugCloudKeyOverride = 'sk-x';
+    addTearDown(() => VoiceDictationController.debugCloudKeyOverride = null);
+    final c = VoiceDictationController(
+      prefs: (AppState()..loaded = true).uiPrefs,
+      onText: (_, __, ___) {},
+      onError: (_, __) {},
+    );
     await tester.pumpWidget(
       MaterialApp(
         theme: buildAppTheme(),
-        home: Scaffold(body: VoiceInputSheet(onSend: (_) {})),
+        home: Scaffold(body: VoiceDictationStrip(controller: c)),
       ),
     );
+    unawaited(c.start(VoiceDictationMode.pushToTalk));
     for (var i = 0; i < 12; i++) {
       await tester.pump(const Duration(milliseconds: 100));
     }
-    _expectNoMissing('VoiceInputSheet');
+    _expectNoMissing('VoiceDictationStrip');
+    c.dispose();
   });
 
   testWidgets('英文·SubagentListSheet 空态无未翻译项', (tester) async {
@@ -301,4 +337,14 @@ void main() {
     );
     _expectNoMissing('InlineDiffPreview');
   });
+}
+
+class _StripRecorder implements VoiceRecorder {
+  @override
+  Future<void> start() async {}
+  @override
+  Future<Uint8List> stop() async =>
+      wrapPcm16Wav(Uint8List.fromList(List.filled(3200, 0)));
+  @override
+  Future<void> cancel() async {}
 }

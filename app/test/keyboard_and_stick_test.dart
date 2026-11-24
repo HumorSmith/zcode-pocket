@@ -1,12 +1,17 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:zcode_pocket/core/audio_capture.dart';
+import 'package:zcode_pocket/core/system_asr.dart';
 import 'package:zcode_pocket/state/app_state.dart';
 import 'package:zcode_pocket/state/app_state_scope.dart';
 import 'package:zcode_pocket/state/cache_policy.dart';
+import 'package:zcode_pocket/state/voice_dictation_controller.dart';
+import 'package:zcode_pocket/state/voice_availability.dart';
 import 'package:zcode_pocket/ui/conversation_page.dart';
-import 'package:zcode_pocket/ui/voice_input_sheet.dart';
 
 /// 2026-10-23 用户反馈两件回归：
 /// ① 流式输出不持续粘底——解除粘底后（上滑回看）手动滑回底部不恢复
@@ -113,40 +118,76 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
   });
 
-  testWidgets('② 语音面板随键盘垫高（viewInsets.bottom 透传）', (tester) async {
+  testWidgets('② 语音 inline 条带随键盘垫高（不被输入法遮挡）', (tester) async {
     tester.view.physicalSize = const Size(kTestPhoneW, 780);
     tester.view.devicePixelRatio = 1.0;
-    tester.view.viewInsets = const FakeViewPadding(bottom: 260);
     addTearDown(tester.view.reset);
 
-    await tester.pumpWidget(_host(AppState(), const Scaffold(body: SizedBox())));
-    await tester.pump();
-    // 不 await：sheet 的关闭由用户手势驱动，await 会等成超时。
-    unawaited(
-      showVoiceInputSheet(tester.element(find.byType(Scaffold)), onSend: (_) {}),
+    // 云转写缝：点按麦克风进入开关式 recording，strip 在场。
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+      const MethodChannel('flutter.baseflow.com/permissions/methods'),
+      (call) async {
+        if (call.method == 'requestPermissions' ||
+            call.method == 'checkPermissions') {
+          return {7: 1};
+        }
+        return null;
+      },
     );
+    addTearDown(() => TestDefaultBinaryMessengerBinding
+        .instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(
+          const MethodChannel('flutter.baseflow.com/permissions/methods'),
+          null,
+        ));
+    SystemAsr.debugSetAvailable(false);
+    addTearDown(SystemAsr.resetForTest);
+    debugVoiceRecognitionAvailable = true;
+    addTearDown(() => debugVoiceRecognitionAvailable = null);
+    debugVoiceRecorderOverride = () => _NoopRecorder();
+    addTearDown(() => debugVoiceRecorderOverride = null);
+    VoiceDictationController.debugCloudKeyOverride = 'sk-x';
+    addTearDown(() => VoiceDictationController.debugCloudKeyOverride = null);
+
+    await tester.pumpWidget(
+      _host(AppState()..loaded = true,
+          const ConversationPage(sessionId: null, title: '草稿')),
+    );
+    await tester.pump();
+    // 只保留长按：按住启动 recording（不松开，保持会话活跃）。
+    final g = await tester.startGesture(
+      tester.getCenter(find.byKey(const ValueKey('send-button'))),
+    );
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pump(const Duration(milliseconds: 100));
+    final strip = find.byKey(const ValueKey('voice-strip'));
+    expect(strip, findsOneWidget);
+
+    // 键盘弹起：Scaffold _resize 把输入栏+条带顶到键盘上方。
+    tester.view.viewInsets = const FakeViewPadding(bottom: 260);
     for (var i = 0; i < 15; i++) {
       await tester.pump(const Duration(milliseconds: 100));
     }
-    // 无麦克风权限的测试环境走 failed 分支——结构断言：面板外壳存在
-    // viewInsets 垫高 Padding（修复本体），垫高值=键盘 inset。
-    final sheet = find.descendant(
-      of: find.byType(BottomSheet),
-      matching: find.byType(VoiceInputSheet),
-    );
-    expect(sheet, findsOneWidget);
-    expect(
-      find.byWidgetPredicate(
-        (w) => w is Padding && (w.padding as EdgeInsets).bottom == 260,
-      ),
-      findsOneWidget,
-      reason: '键盘弹起时面板应垫到键盘上方',
-    );
-    // 面板整体在键盘上方（不与其重叠）。
-    final box = tester.renderObject<RenderBox>(sheet);
+    final box = tester.renderObject<RenderBox>(strip);
     expect(
       box.localToGlobal(Offset.zero).dy + box.size.height,
       lessThanOrEqualTo(780 - 260),
+      reason: '键盘弹起时语音条带应在键盘上方（不重叠）',
     );
+    await g.up();
+    await tester.pump();
+    tester.view.viewInsets = FakeViewPadding.zero;
+    await tester.pump(const Duration(milliseconds: 100));
   });
+}
+
+class _NoopRecorder implements VoiceRecorder {
+  @override
+  Future<void> start() async {}
+  @override
+  Future<Uint8List> stop() async =>
+      wrapPcm16Wav(Uint8List.fromList(List.filled(3200, 0)));
+  @override
+  Future<void> cancel() async {}
 }

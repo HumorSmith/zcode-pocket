@@ -10,4 +10,8 @@ class AppStateScope extends InheritedNotifier<AppState> {
 
   static AppState of(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<AppStateScope>()!.notifier!;
+
+  /// 无注入点时返回 null（裸面板 widget 测试等场景安全消费）。
+  static AppState? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<AppStateScope>()?.notifier;
 }

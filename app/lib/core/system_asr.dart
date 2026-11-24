@@ -7,7 +7,7 @@ import 'package:flutter/services.dart';
 /// 语音识别的主体通道——设备生态提供的通用识别能力（海外机=Google
 /// 服务、多数国产机=ROM 内置语音服务，语音键盘同源），所有构建默认
 /// 走此通道；私有维护者构建可经 VOICE_HMS 覆盖为另一引擎（仅本地，
-/// 见 voice_input_sheet.hmsVoiceConfigured）。系统服务与私有引擎皆无
+/// 见 voice_availability.hmsVoiceConfigured）。系统服务与私有引擎皆无
 /// 时隐藏语音入口。
 ///
 /// 原生实现=MainActivity 挂载的 SystemAsrPlugin（零第三方依赖，纯

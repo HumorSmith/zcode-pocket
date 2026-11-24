@@ -9,6 +9,8 @@ import 'package:flutter/material.dart' hide Text;
 
 import '../core/localized_text.dart';
 import '../core/l10n.dart';
+import 'package:permission_handler/permission_handler.dart'
+    show openAppSettings;
 
 import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
@@ -32,7 +34,9 @@ import 'brand_logo.dart';
 import 'attachments_compose.dart';
 import 'attachment_annotate_page.dart';
 import 'quota_banner.dart';
-import 'voice_input_sheet.dart';
+import '../state/voice_availability.dart';
+import '../state/voice_dictation_controller.dart';
+import 'voice_dictation_strip.dart';
 import '../state/cache_policy.dart';
 import '../state/draft_store.dart';
 import '../transport/channel_client.dart';
@@ -1188,6 +1192,8 @@ class _ConversationPageState extends State<ConversationPage> {
       }
     }
     _input.removeListener(_onInputChanged);
+    _voiceCtrl?.removeListener(_onVoiceChanged);
+    _voiceCtrl?.dispose();
     _input.dispose();
     _inputFocusNode.dispose();
     _scroll.dispose();
@@ -1869,20 +1875,99 @@ class _ConversationPageState extends State<ConversationPage> {
   /// 添加宫格「附件文件」：系统选择器多选 + 官方边界（8 个/单文件 20MB/
   /// 无类型限制）。部分厂商机型压缩路径有崩溃前科（ 批调研），依赖
   /// 默认 compressionQuality=0 不压缩。
-  /// 语音输入（2026-10-20 交互定稿）：面板内预览可编辑（含整理结果
-  /// 状态行与"用原文"切换）→ 用户点发送直接走发送链路（复用手动发送
-  /// 同一条路，不再进输入框绕一圈；整理成功/失败在面板内可见）。
-  Future<void> _startVoiceInput() async {
-    // 面板先顶上来（2026-10-23 真机反馈"输入法与语音面板互相覆盖"）：
-    // 主输入法先收起，听写阶段面板独占；预览编辑聚焦时由
-    // showVoiceInputSheet 的 viewInsets 垫高避让键盘。
+  /// 语音输入（2026-11-24 按住说话批，决策 26）：inline 按住/开关式
+  /// 会话，模态面板退役。结果进输入框手动发送（决策 9）；runtime
+  /// 门控/发送在途走 mergeBlockedVoiceDraft 合并回填（不静默丢弃）。
+  VoiceDictationController? _voiceCtrl;
+  VoiceDictationController get _voice =>
+      _voiceCtrl ??= VoiceDictationController(
+        prefs: AppStateScope.of(context).uiPrefs,
+        onText: _onVoiceText,
+        onError: _onVoiceError,
+      )..addListener(_onVoiceChanged);
+
+  void _onVoiceChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _startVoiceToggle() {
     FocusManager.instance.primaryFocus?.unfocus();
-    await showVoiceInputSheet(
-      context,
-      onSend: (text) {
-        if (!mounted) return;
-        unawaited(_sendText(text));
-      },
+    unawaited(_voice.start(VoiceDictationMode.toggle));
+  }
+
+  void _voiceHoldStart() {
+    FocusManager.instance.primaryFocus?.unfocus();
+    unawaited(_voice.start(VoiceDictationMode.pushToTalk));
+  }
+
+  /// 上滑 ≥60dp 武装取消（松开即丢弃）。
+  void _voiceHoldMove(double dy) => _voice.armCancel(dy < -60);
+
+  void _voiceHoldEnd() => unawaited(_voice.finish());
+
+  void _onVoiceText(String text, String original, bool refineOk) {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final blocked =
+        _sending || (_sub?.state.runtimeInitializationBlocked ?? false);
+    if (blocked) {
+      final merged = mergeBlockedVoiceDraft(_input.text, text);
+      _suppressDraftSync = true;
+      try {
+        _input.text = merged;
+        _draftTextSnapshot = merged;
+      } finally {
+        _suppressDraftSync = false;
+      }
+      _draftRevision++;
+      unawaited(_saveDraft());
+    } else {
+      _input.text = text;
+    }
+    final prefs = AppStateScope.of(context).uiPrefs;
+    final refineConfigured =
+        prefs.voiceRefineEnabled && (prefs.voiceApiKey ?? '').trim().isNotEmpty;
+    if (refineOk) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(tr('已按口语整理')),
+          duration: const Duration(seconds: 4),
+          persist: false,
+          action: SnackBarAction(
+            label: tr('用原文'),
+            onPressed: () {
+              // 仅当输入框仍是整理稿时回切（用户已编辑不覆盖）。
+              if (mounted && _input.text == text) _input.text = original;
+            },
+          ),
+        ),
+      );
+    } else if (refineConfigured) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(tr('口语整理未生效，已用原文（检查 API key/网络）')),
+          duration: const Duration(seconds: 4),
+          persist: false,
+        ),
+      );
+    }
+  }
+
+  void _onVoiceError(String message, bool needsSettings) {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 4),
+        persist: false,
+        action: needsSettings
+            ? SnackBarAction(
+                label: tr('去设置'),
+                onPressed: () => openAppSettings(),
+              )
+            : null,
+      ),
     );
   }
 
@@ -4000,14 +4085,16 @@ class _ConversationPageState extends State<ConversationPage> {
                   // 验收回填（2026-10-22）：长按发送键=语音无可发现性——
                   // 补稳定入口于加号面板（与桌面「选择能力/技能」同层）。
                   // 无 AGC 配置构建（开源自建包）隐藏（2026-10-28）。
-                  if (voiceRecognitionAvailable)
+                  if (voiceEntryAvailableFor(
+                    AppStateScope.of(sheetContext).uiPrefs,
+                  ))
                     AddAction(
                       key: const ValueKey('add-voice'),
                       icon: Icons.mic_rounded,
                       label: '语音输入',
                       onTap: () {
                         Navigator.pop(sheetContext);
-                        _startVoiceInput();
+                        _startVoiceToggle();
                       },
                     ),
                 ],
@@ -5817,6 +5904,8 @@ class _ConversationPageState extends State<ConversationPage> {
                 ),
               ),
             ),
+          if (!widget.readOnly)
+            VoiceDictationStrip(controller: _voice),
           if (widget.readOnly)
             ReadOnlyBar()
           else
@@ -5845,7 +5934,20 @@ class _ConversationPageState extends State<ConversationPage> {
               // 回落）——离线/缓存首帧点开不再显示空「模型/思考档」。
               onSelectionTap: () => _openModelSheet(effState),
               onAdd: _sending ? null : _showAddSheet,
-              onVoice: voiceRecognitionAvailable ? _startVoiceInput : null,
+              // 2026-11-24 用户拍板：麦克风只保留长按（按住说话），点按
+              // 不启动会话——onVoice 传 null，voiceAvailable 仅供麦克风
+              // 图标 affordance 与长按闸。开关式会话仅经加号面板 add-voice。
+              onVoice: null,
+              voiceAvailable:
+                  voiceEntryAvailableFor(AppStateScope.of(context).uiPrefs),
+              onVoiceHoldStart:
+                  voiceEntryAvailableFor(AppStateScope.of(context).uiPrefs)
+                      ? _voiceHoldStart
+                      : null,
+              onVoiceHoldMove: _voiceHoldMove,
+              onVoiceHoldEnd: _voiceHoldEnd,
+              voiceActive: _voice.active,
+              voiceCancelArmed: _voice.cancelArmed,
               statusColor: _statusDotColor(context),
               statusProgress: _contextUsageProgress(effState),
               onStatusTap: _toggleUsageCard,

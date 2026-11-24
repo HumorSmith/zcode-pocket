@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 /// （HMS 结构性剥离 2026-10-29 批次）：原生实现=src/voiceHms 条件源集的
 /// HmsAsrPlugin（仅 -PvoiceHms=true 构建在包；默认/公开构建无此类与任何
 /// HMS 依赖，语音走 [SystemAsr] 系统通道）。选择逻辑见
-/// voice_input_sheet.hmsVoiceConfigured。
+/// voice_availability.hmsVoiceConfigured。
 ///
 /// 协议与 SystemAsr 同构：start→（partial…）→final / error；原生事件经
 /// invokeMethod('event') 推送。prepare 一步做 AGConnect 编程式初始化 +

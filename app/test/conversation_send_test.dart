@@ -10,8 +10,13 @@ import 'package:zcode_pocket/state/app_state.dart';
 import 'package:zcode_pocket/state/app_state_scope.dart';
 import 'package:zcode_pocket/ui/conversation_page.dart';
 import 'package:zcode_pocket/ui/interaction_banner.dart';
-import 'package:zcode_pocket/ui/voice_input_sheet.dart'
+import 'package:zcode_pocket/state/voice_availability.dart'
     show debugVoiceRecognitionAvailable;
+import 'package:zcode_pocket/state/voice_dictation_controller.dart';
+import 'package:zcode_pocket/core/audio_capture.dart';
+import 'package:zcode_pocket/core/system_asr.dart';
+import 'package:flutter/services.dart';
+import 'dart:typed_data';
 import 'package:zcode_pocket/transport/conversation.dart';
 
 /// 立即失败的 createSession（草稿态首条消息失败零提示）。
@@ -316,11 +321,39 @@ void main() {
     });
   });
 
-  group('语音键退役+状态点回归（2026-10-22 用户拍板）', () {
-    setUp(() => debugVoiceRecognitionAvailable = true);
-    tearDown(() => debugVoiceRecognitionAvailable = null);
+  group('语音键退役+状态点回归（2026-10-22 用户拍板；2026-11-24 按住说话批：模态改 inline）', () {
+    const permCh = MethodChannel('flutter.baseflow.com/permissions/methods');
+    const sysCh = MethodChannel('companion/sys_asr');
+    setUp(() {
+      debugVoiceRecognitionAvailable = true;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(permCh, (call) async {
+        if (call.method == 'requestPermissions' ||
+            call.method == 'checkPermissions') {
+          return {7: 1};
+        }
+        return null;
+      });
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(sysCh, (call) async {
+        if (call.method == 'isAvailable') return true;
+        return null;
+      });
+    });
+    tearDown(() {
+      debugVoiceRecognitionAvailable = null;
+      SystemAsr.resetForTest();
+      debugVoiceRecorderOverride = null;
+      VoiceDictationController.debugCloudKeyOverride = null;
+      VoiceDictationController.debugAsrOverride = null;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(permCh, null);
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(sysCh, null);
+    });
     testWidgets('语音键消失、状态点在输入栏、长按发送键唤起语音面板', (tester) async {
       final app = AppState();
+      _cloudSeams();
       await tester.pumpWidget(
         _host(app, child: const ConversationPage(sessionId: null, title: '草稿')),
       );
@@ -337,22 +370,39 @@ void main() {
       // 清空草稿回到麦克风；点麦克风直接唤起语音面板。
       await tester.enterText(find.byType(TextField).first, '');
       await tester.pump();
+      // 2026-11-24 用户拍板：麦克风只保留长按。点按不启动（无 strip）。
       await tester.tap(find.byKey(const ValueKey('send-button')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
-      expect(find.byType(BottomSheet), findsOneWidget);
-      // 长按发送键（含草稿为空时）= 语音输入（拍板语义不变）。
+      expect(find.byKey(const ValueKey('voice-strip')), findsNothing);
+      // 长按=按住说话 inline 会话（无模态）。
+      final g = await tester.startGesture(
+        tester.getCenter(find.byKey(const ValueKey('send-button'))),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.byKey(const ValueKey('voice-strip')), findsOneWidget);
+      expect(find.byType(BottomSheet), findsNothing);
+      await g.up();
+      await tester.pump();
     });
 
-    testWidgets('长按发送键唤起语音面板（拍板语义保留）', (tester) async {
+    testWidgets('长按发送键=按住说话（inline 条带，无模态）', (tester) async {
       final app = AppState();
+      _cloudSeams();
       await tester.pumpWidget(
         _host(app, child: const ConversationPage(sessionId: null, title: '草稿')),
       );
-      await tester.longPress(find.byKey(const ValueKey('send-button')));
+      // 按住不松开（longPress 自带 up 会立即收尾云转写），条带应在场。
+      final g = await tester.startGesture(
+        tester.getCenter(find.byKey(const ValueKey('send-button'))),
+      );
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.byKey(const ValueKey('voice-strip')), findsOneWidget);
+      expect(find.byType(BottomSheet), findsNothing);
+      await g.up();
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
-      expect(find.byType(BottomSheet), findsOneWidget);
     });
 
     testWidgets('点发送即收起输入法（2026-10-23 拍板：键盘不再常驻挡屏）', (tester) async {
@@ -417,4 +467,22 @@ void main() {
       expect(find.textContaining('工具请求权限'), findsOneWidget);
     });
   });
+}
+
+/// 云转写缝：系统判不可用+云 key+假录音/转写，hold 走 cloud recording。
+void _cloudSeams() {
+  SystemAsr.debugSetAvailable(false);
+  VoiceDictationController.debugCloudKeyOverride = 'sk-x';
+  debugVoiceRecorderOverride = () => _Rec();
+  VoiceDictationController.debugAsrOverride = (_) async => 'x';
+}
+
+class _Rec implements VoiceRecorder {
+  @override
+  Future<void> start() async {}
+  @override
+  Future<Uint8List> stop() async =>
+      wrapPcm16Wav(Uint8List.fromList(List.filled(3200, 0)));
+  @override
+  Future<void> cancel() async {}
 }

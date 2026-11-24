@@ -2,6 +2,7 @@ import 'package:flutter/material.dart' hide Text;
 
 import '../core/localized_text.dart';
 
+import '../core/system_asr.dart';
 import '../core/theme.dart';
 import '../core/voice_refine.dart';
 import '../state/app_state_scope.dart';
@@ -152,6 +153,87 @@ class SettingsVoicePage extends StatelessWidget {
                   await app.uiPrefs.setVoiceApiKey(value);
                 }
               },
+            ),
+            // 识别引擎（DeepSeek ASR 批处理通道）：系统服务缺席时录音
+            // 上传转写（录完再转写）。key 独立可选字段；留空且整理提供商
+            // 为 DeepSeek 时复用整理 key（ui_prefs.deepseekAsrKey）。
+            ListTile(
+              leading: const Icon(Icons.record_voice_over_outlined, size: 20),
+              title: const Text(
+                '系统语音服务',
+                style: TextStyle(fontSize: AppType.uiBase),
+              ),
+              subtitle: Text(
+                SystemAsr.available
+                    ? '可用（优先，实时上屏）'
+                    : '不可用（本机无系统识别服务）',
+                style: const TextStyle(fontSize: AppType.uiCaption),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.cloud_outlined, size: 20),
+              title: const Text(
+                'DeepSeek 转写 API key（可选）',
+                style: TextStyle(fontSize: AppType.uiBase),
+              ),
+              subtitle: Text(
+                (app.uiPrefs.voiceAsrApiKey ?? '').trim().isNotEmpty
+                    ? '已设置（key 仅存本机）'
+                    : app.uiPrefs.deepseekAsrKey != null
+                        ? '未单独设置——复用整理 key'
+                        : '未设置——系统服务不可用时语音入口隐藏',
+                style: const TextStyle(fontSize: AppType.uiCaption),
+              ),
+              trailing: const Icon(Icons.edit_outlined, size: 16),
+              onTap: () async {
+                final controller = TextEditingController(
+                  text: app.uiPrefs.voiceAsrApiKey ?? '',
+                );
+                final value = await showDialog<String>(
+                  context: context,
+                  builder: (dialogContext) => AlertDialog(
+                    title: const Text('DeepSeek 转写 API key'),
+                    content: TextField(
+                      key: const ValueKey('voice-asr-key-input'),
+                      controller: controller,
+                      obscureText: true,
+                      decoration: const InputDecoration(
+                        hintText: 'platform.deepseek.com 的 API key（与整理同账号）',
+                      ),
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(dialogContext),
+                        child: const Text('取消'),
+                      ),
+                      FilledButton(
+                        onPressed: () =>
+                            Navigator.pop(dialogContext, controller.text),
+                        child: const Text('保存'),
+                      ),
+                    ],
+                  ),
+                );
+                // 延迟到退场动画后释放（既有 key 对话框同款）。
+                Future.delayed(
+                  const Duration(milliseconds: 400),
+                  controller.dispose,
+                );
+                if (value != null) {
+                  await app.uiPrefs.setVoiceAsrApiKey(value);
+                }
+              },
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Text(
+                '系统服务不可用时录音上传 DeepSeek 转写（录完再转写）；'
+                '音频经你的 key 直连官方端点。',
+                style: TextStyle(
+                  fontSize: AppType.uiXs,
+                  color: context.colors.foregroundSubtlest,
+                ),
+              ),
             ),
           ],
         ),

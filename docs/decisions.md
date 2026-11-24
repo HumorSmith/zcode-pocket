@@ -178,12 +178,19 @@ patch.
 
 **Problem**: vendor speech engines are not portable and add large native
 dependencies.
-**Decision**: use Android's standard `SpeechRecognizer` when available, hide
-the entry when it is not, and keep optional transcript polishing behind
-user-supplied API keys. Vendor-specific engines are not part of the public
-build.
+**Decision**: use Android's standard `SpeechRecognizer` when available and
+prefer it (live captions); when the device ships no recognition service,
+offer a batch cloud fallback — record-then-transcribe via DeepSeek's
+official ASR endpoint behind a user-supplied API key (pure Dart multipart
+upload, no vendor SDK) — and hide the entry only when neither is configured.
+Optional transcript polishing stays behind user-supplied API keys; the
+transcription reuses the polishing key when the provider is DeepSeek, or a
+dedicated optional key. Vendor-specific engines are not part of the public
+build. (2026-11-24 revision: cloud fallback added after on-device evidence
+that China-market ROMs ship no RecognitionService at all.)
 **Cost**: recognition quality and availability depend on the device; some
-devices ship no recognition service.
+devices ship no recognition service. The batch fallback has no live captions
+and uploads audio to the user-configured endpoint.
 
 ## 17. Protocol compatibility is additive and tolerant
 
@@ -294,3 +301,24 @@ tracked as issues rather than promised away.
 **Cost**: older desktop versions may stay broken longer; issue reports are
 the main coverage for other environments — the bug report template asks for
 the app version, the device, and the ZCode desktop version.
+
+## 26. Voice input is inline push-to-talk, not a modal sheet
+
+**Problem**: the modal bottom sheet (open → tap a button to stop → preview →
+send) added friction and covered the keyboard; on devices whose ROM reports a
+recognition service that then fails at instance creation, the sheet dead-ended.
+**Decision**: hold the mic/send button to talk, release to transcribe; slide up
+to cancel. The mic only responds to long-press (a tap does nothing — a short
+press must not start a session that immediately reports "nothing heard"); a
+hands-free toggle session with inline stop/cancel buttons is available from the
+add-panel voice entry instead. The result lands in the composer draft for
+manual send (decision 9 — never auto-send). The state machine lives in a UI-free
+controller (`state/voice_dictation_controller.dart`); an inline strip
+(`ui/voice_dictation_strip.dart`) shows phase/partial/timer; the modal sheet is
+retired. System recognizer stays preferred (live partials in the strip); the
+DeepSeek batch channel is the fallback, including a probe-false-positive ROM
+fallback on system error 5/-1.
+**Cost**: push-to-talk needs a stable held-gesture widget identity (the send
+button only changes icon/color while active); slide-cancel and toggle mode add
+gesture surface to regression-test; the preview-edit step is gone (users edit
+in the composer instead).
